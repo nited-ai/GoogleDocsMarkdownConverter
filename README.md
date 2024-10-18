@@ -20,8 +20,8 @@ Im Skript gibt es zwei wichtige Variablen, die du anpassen musst:
 
 javascript
 Copy code
-const SECRET_TOKEN = 's3cUr3T0k3n!@#4567890'; // Ersetze dies durch dein starkes Token
-const PROCESSED_FOLDER_ID = '1LpfMRuyarLzCrWKzUFU3dLVqG4mpZoUs'; // Ersetze dies durch die ID des Ordners, in den die verarbeiteten Dateien verschoben werden
+const SECRET_TOKEN = '0123456789ABCDEFGH'; // Ersetze dies durch dein starkes Token
+const PROCESSED_FOLDER_ID = '1LpfMRuyarLzCkeuGHuD3dLVqG4mpZoUs'; // Ersetze dies durch die ID des Ordners, in den die verarbeiteten Dateien verschoben werden
 SECRET_TOKEN: Ein Token, um sicherzustellen, dass nur autorisierte Anfragen an das Skript gesendet werden.
 PROCESSED_FOLDER_ID: Die ID des Google Drive-Ordners, in den die verarbeiteten Dokumente verschoben werden.
 Die Ordner-ID kannst du finden, indem du zu dem gewünschten Ordner auf Google Drive gehst und den letzten Teil der URL kopierst (z.B. https://drive.google.com/drive/folders/ID_HIER).
