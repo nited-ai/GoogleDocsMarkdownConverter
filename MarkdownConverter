@@ -1,0 +1,251 @@
+const SECRET_TOKEN = '0123456789ABCDEFGH'; // Ersetzen Sie dies durch Ihr starkes Token
+const PROCESSED_FOLDER_ID = '1LGfMRuyarLzArWKzUFU3dLVqF4mpZTUs'; // Ersetzen Sie dies durch Ihre verarbeitete Ordner-ID
+
+/**
+ * HTTP POST-Handler für den Webhook.
+ * Erwartet JSON-Daten mit 'docIds' (Array) und 'token'.
+ */
+function doPost(e) {
+  try {
+    // Überprüfen, ob Daten gesendet wurden
+    if (!e.postData || !e.postData.contents) {
+      throw new Error('Keine Daten empfangen.');
+    }
+
+    // Parsen der JSON-Daten
+    const data = JSON.parse(e.postData.contents);
+    const { docIds, token } = data;
+
+    // Sicherheitsüberprüfung
+    if (token !== SECRET_TOKEN) {
+      throw new Error('Unbefugter Zugriff.');
+    }
+
+    // Überprüfen, ob docIds vorhanden sind
+    if (!docIds || !Array.isArray(docIds) || docIds.length === 0) {
+      throw new Error('Dokumenten-IDs fehlen oder sind ungültig.');
+    }
+
+    // Dokumente verarbeiten
+    docIds.forEach(docId => {
+      processDocument(docId);
+    });
+
+    // Erfolgreiche Antwort zurücksenden
+    return ContentService
+      .createTextOutput(JSON.stringify({ status: 'success', message: 'Alle Dokumente verarbeitet und verschoben.' }))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    // Fehlerhafte Antwort zurücksenden
+    return ContentService
+      .createTextOutput(JSON.stringify({ status: 'error', message: error.message }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/**
+ * Verarbeitet ein einzelnes Dokument anhand seiner ID, konvertiert Markdown und verschiebt es in den verarbeiteten Ordner.
+ * @param {string} docId - Die Dokumenten-ID des zu verarbeitenden Dokuments.
+ */
+function processDocument(docId) {
+  try {
+    // Dokument öffnen
+    const doc = DocumentApp.openById(docId);
+    if (!doc) {
+      throw new Error(`Dokument mit der ID ${docId} konnte nicht geöffnet werden.`);
+    }
+
+    // Markdown konvertieren und das Dokument bereinigen
+    convertMarkdownAndCleanUp(docId);
+
+    // Verschiebe das Dokument in den Ordner für verarbeitete Dateien
+    const processedFolder = DriveApp.getFolderById(PROCESSED_FOLDER_ID);
+    const file = DriveApp.getFileById(docId);
+    file.moveTo(processedFolder);
+
+  } catch (error) {
+    Logger.log('Fehler bei der Verarbeitung des Dokuments mit ID ' + docId + ': ' + error.message);
+  }
+}
+
+/**
+ * Hauptfunktion zur Konvertierung von Markdown, Entfernen leerer Absätze und Hinzufügen von Zeilenabständen nach Listen.
+ * Diese Funktion nimmt eine Dokumenten-ID als Parameter, öffnet das Dokument und verarbeitet es.
+ * @param {string} docId - Die Dokumenten-ID des zu verarbeitenden Dokuments.
+ */
+function convertMarkdownAndCleanUp(docId) {
+  try {
+    // Öffne das Dokument über seine ID
+    const doc = DocumentApp.openById(docId);
+    const body = doc.getBody();
+    const totalElements = body.getNumChildren();
+
+    // Basiswerte für Einzüge
+    const baseIndentStart = 30; // Basis linker Einzug in Punkten
+    const indentReductionPerLevel = 5; // Reduktion des linken Einzugs pro Einzugsebene
+    const baseIndentFirstLine = 8; // Basis hängender Einzug in Punkten
+    const indentFirstLineReductionPerLevel = 1; // Reduktion des hängenden Einzugs pro Ebene
+
+    // Arrays zur Speicherung von Änderungen
+    const lastListItemIndices = [];
+    const emptyParagraphIndices = [];
+
+    // Durchlaufe alle Elemente im Dokument
+    for (let i = 0; i < totalElements; i++) {
+      const element = body.getChild(i);
+
+      if (element.getType() === DocumentApp.ElementType.PARAGRAPH) {
+        const paragraph = element.asParagraph();
+        const text = paragraph.getText().trim();
+
+        // Überschriften erkennen und umwandeln
+        const headerMatch = text.match(/^(#{1,6})\s*(.*)/);
+        if (headerMatch) {
+          const headerLevel = headerMatch[1].length;
+          const headerText = headerMatch[2];
+
+          paragraph.clear().setText(headerText);
+          paragraph.setHeading(getHeadingType(headerLevel));
+          continue;
+        }
+
+        // Listen erkennen und umwandeln
+        const listMatch = text.match(/^(\s*)([-*+]|\d+\.)\s+(.*)/);
+        if (listMatch) {
+          const leadingSpaces = listMatch[1].length;
+          const indentLevel = Math.floor(leadingSpaces / 2); // Jeder 2 Leerzeichen = eine Einzugsebene
+          const bulletType = listMatch[2];
+          const listItemText = listMatch[3];
+
+          // Entferne den aktuellen Absatz und ersetze ihn durch einen ListItem
+          body.removeChild(element);
+          const listItem = body.insertListItem(i, listItemText);
+
+          // Listenart festlegen
+          listItem.setGlyphType(
+            bulletType.match(/^[-*+]$/) ? DocumentApp.GlyphType.BULLET : DocumentApp.GlyphType.NUMBER
+          );
+
+          // Einzugsebene und Einzüge setzen
+          listItem.setNestingLevel(indentLevel);
+          listItem.setIndentStart(Math.max(baseIndentStart - (indentLevel * indentReductionPerLevel), 0));
+          listItem.setIndentFirstLine(Math.max(baseIndentFirstLine - (indentLevel * indentFirstLineReductionPerLevel), 0));
+
+          // Inline-Formatierungen anwenden
+          applyTextFormatting(listItem);
+
+          // Überprüfen, ob dies das letzte ListItem in der aktuellen Liste ist
+          if (i + 1 === body.getNumChildren()) {
+            lastListItemIndices.push(i);
+          } else {
+            const nextElement = body.getChild(i + 1);
+            if (nextElement.getType() !== DocumentApp.ElementType.LIST_ITEM ||
+                nextElement.asListItem().getNestingLevel() < indentLevel) {
+              lastListItemIndices.push(i);
+            }
+          }
+          continue;
+        }
+
+        // Prüfen, ob der Absatz leer ist
+        if (text === "" && i !== totalElements - 1) {
+          emptyParagraphIndices.push(i);
+        } else {
+          // Inline-Formatierungen (fett, kursiv) anwenden
+          applyTextFormatting(paragraph);
+        }
+      }
+    }
+
+    // Setze Zeilenabstand nach den letzten ListItems
+    setSpacingAfterLastListItems(lastListItemIndices, 12);
+
+    // Entferne leere Absätze, außer dem letzten
+    removeEmptyParagraphs(body, emptyParagraphIndices);
+
+    // Speichere die Änderungen
+    doc.saveAndClose();
+
+  } catch (error) {
+    Logger.log('Fehler bei der Verarbeitung des Dokuments: ' + error.message);
+  }
+}
+
+/**
+ * Gibt den entsprechenden ParagraphHeading-Typ basierend auf der Überschriftenebene zurück.
+ * @param {number} level - Die Überschriftenebene (1 bis 6).
+ * @return {DocumentApp.ParagraphHeading} - Der entsprechende ParagraphHeading-Typ.
+ */
+function getHeadingType(level) {
+  return DocumentApp.ParagraphHeading['HEADING' + level] || DocumentApp.ParagraphHeading.NORMAL;
+}
+
+/**
+ * Wendet fett und kursiv Formatierungen basierend auf Markdown-Syntax an.
+ * @param {ListItem|Paragraph} element - Das ListItem- oder Paragraph-Element, das formatiert werden soll.
+ */
+function applyTextFormatting(element) {
+  const textElement = element.asText();
+  let text = textElement.getText();
+
+  // Fett (**text**)
+  const boldRegex = /\*\*(.+?)\*\*/g;
+  const italicRegex = /\*(?!\*)(.+?)\*/g; // Verhindert, dass **text** als *text* erkannt wird
+
+  text = applyFormatting(textElement, text, boldRegex, 'setBold');
+  applyFormatting(textElement, text, italicRegex, 'setItalic');
+}
+
+/**
+ * Hilfsfunktion zum Anwenden von Formatierungen wie fett und kursiv.
+ * @param {Text} textElement - Das TextElement, das formatiert wird.
+ * @param {string} text - Der aktuelle Textinhalt.
+ * @param {RegExp} regex - Der reguläre Ausdruck, der das zu formatierende Muster definiert.
+ * @param {string} method - Die Methode zur Anwendung der Formatierung (z.B. 'setBold').
+ * @return {string} - Der aktualisierte Textinhalt.
+ */
+function applyFormatting(textElement, text, regex, method) {
+  let matches;
+  while ((matches = regex.exec(text)) !== null) {
+    const matchText = matches[0];
+    const content = matches[1];
+    const start = matches.index;
+
+    textElement.deleteText(start, start + matchText.length - 1);
+    textElement.insertText(start, content)[method](start, start + content.length - 1, true);
+
+    text = textElement.getText();
+    regex.lastIndex = start + content.length;
+  }
+  return text;
+}
+
+/**
+ * Setzt den gewünschten Zeilenabstand nach den letzten ListItems.
+ * @param {Array<number>} indices - Die Indizes der letzten ListItems.
+ * @param {number} spacingPoints - Der gewünschte Zeilenabstand in Punkten.
+ */
+function setSpacingAfterLastListItems(indices, spacingPoints) {
+  const body = DocumentApp.getActiveDocument().getBody();
+  indices.forEach(index => {
+    if (index < body.getNumChildren()) {
+      const listItem = body.getChild(index).asListItem();
+      listItem.setSpacingAfter(spacingPoints);
+    }
+  });
+}
+
+/**
+ * Entfernt alle leeren Absätze im Dokument, außer dem letzten Absatz.
+ * @param {Body} body - Das Dokumentenbody-Element.
+ * @param {Array<number>} emptyIndices - Die Indizes der leeren Absätze, die entfernt werden sollen.
+ */
+function removeEmptyParagraphs(body, emptyIndices) {
+  emptyIndices.sort((a, b) => b - a);
+  emptyIndices.forEach(index => {
+    if (index < body.getNumChildren() - 1) {
+      body.removeChild(body.getChild(index));
+    }
+  });
+}
